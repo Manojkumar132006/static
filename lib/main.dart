@@ -1,121 +1,348 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'services/audio_service.dart';
+import 'widgets/radio_display.dart';
+import 'widgets/ptt_button.dart';
+import 'widgets/ticker_sheet.dart';
 
-void main() {
-  runApp(const MyApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AudioService.instance.init();
+  runApp(const StaticRadioApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class StaticRadioApp extends StatelessWidget {
+  const StaticRadioApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+      title: 'Static',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData.dark().copyWith(
+        scaffoldBackgroundColor: const Color(0xFF0F1115),
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF52B788),
+          secondary: Color(0xFFE63946),
+          surface: Color(0xFF16191F),
+        ),
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const RadioConsoleScreen(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+class RadioConsoleScreen extends StatefulWidget {
+  const RadioConsoleScreen({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<RadioConsoleScreen> createState() => _RadioConsoleScreenState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _RadioConsoleScreenState extends State<RadioConsoleScreen> {
+  final List<String> _channels = ['SQUAD', 'BEER', 'ALPHA', 'HEIST', 'OPS', 'CHILL'];
+  int _activeChannelIndex = 0;
+  bool _isTransmitting = false;
+  bool _isChannelBusy = false;
 
-  void _incrementCounter() {
+  String get _activeTicker => _channels[_activeChannelIndex];
+
+  void _nextChannel() {
+    HapticFeedback.lightImpact();
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      _activeChannelIndex = (_activeChannelIndex + 1) % _channels.length;
     });
+    AudioService.instance.playSquelch();
+  }
+
+  void _prevChannel() {
+    HapticFeedback.lightImpact();
+    setState(() {
+      _activeChannelIndex = (_activeChannelIndex - 1 + _channels.length) % _channels.length;
+    });
+    AudioService.instance.playSquelch();
+  }
+
+  void _setCustomTicker(String ticker) {
+    final upper = ticker.toUpperCase();
+    setState(() {
+      if (!_channels.contains(upper)) {
+        _channels.insert(0, upper);
+        _activeChannelIndex = 0;
+      } else {
+        _activeChannelIndex = _channels.indexOf(upper);
+      }
+    });
+    AudioService.instance.playSquelch();
+  }
+
+  Future<void> _startTransmitting() async {
+    if (_isChannelBusy) {
+      _notifyChannelBusy();
+      return;
+    }
+
+    setState(() => _isTransmitting = true);
+    final started = await AudioService.instance.startTransmission();
+    if (!started && mounted) {
+      setState(() => _isTransmitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Microphone permission required for PTT'),
+          backgroundColor: Color(0xFFE63946),
+        ),
+      );
+    }
+  }
+
+  Future<void> _stopTransmitting() async {
+    if (!_isTransmitting) return;
+    setState(() => _isTransmitting = false);
+    // Ephemeral transmission: Audio data is immediately discarded / not stored on disk
+    await AudioService.instance.stopTransmission();
+  }
+
+  void _notifyChannelBusy() {
+    HapticFeedback.vibrate();
+    ScaffoldMessenger.of(context).removeCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.lock, color: Colors.black, size: 18),
+            const SizedBox(width: 8),
+            Text(
+              'CHANNEL BUSY — Wait until transmission ends!',
+              style: GoogleFonts.shareTechMono(
+                color: Colors.black,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: const Color(0xFFFFB703),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  Future<void> _simulateIncomingCallout() async {
+    if (_isTransmitting || _isChannelBusy) return;
+    setState(() => _isChannelBusy = true);
+
+    await AudioService.instance.playKeyClick();
+    // Simulate someone speaking for 3 seconds
+    await Future.delayed(const Duration(seconds: 3));
+    await AudioService.instance.playSquelch();
+
+    if (mounted) {
+      setState(() => _isChannelBusy = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
+      body: SafeArea(
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
           children: [
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+            const SizedBox(height: 12),
+
+            // Top Header: Sleek brand & Squelch button
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Color(0xFF52B788),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Color(0xFF52B788),
+                              blurRadius: 6,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'STATIC',
+                        style: GoogleFonts.shareTechMono(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 3,
+                        ),
+                      ),
+                    ],
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.tune_rounded, color: Colors.white38, size: 20),
+                    tooltip: 'All Channels',
+                    onPressed: () {
+                      TickerSheet.show(
+                        context,
+                        currentTicker: _activeTicker,
+                        onTickerSelected: _setCustomTicker,
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            // Minimalist Radio Display
+            RadioDisplay(
+              ticker: _activeTicker,
+              isTransmitting: _isTransmitting,
+              isChannelBusy: _isChannelBusy,
+              onSelectTicker: () {
+                TickerSheet.show(
+                  context,
+                  currentTicker: _activeTicker,
+                  onTickerSelected: _setCustomTicker,
+                );
+              },
+              onNextChannel: _nextChannel,
+              onPrevChannel: _prevChannel,
+            ),
+
+            const SizedBox(height: 20),
+
+            // Quick Channel Preset Selector (Horizontal clean pills)
+            SizedBox(
+              height: 36,
+              child: ListView.separated(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                scrollDirection: Axis.horizontal,
+                itemCount: _channels.length + 1,
+                separatorBuilder: (_, __) => const SizedBox(width: 8),
+                itemBuilder: (context, index) {
+                  // Last item is "+ NEW" button
+                  if (index == _channels.length) {
+                    return InkWell(
+                      onTap: () {
+                        HapticFeedback.lightImpact();
+                        TickerSheet.show(
+                          context,
+                          currentTicker: _activeTicker,
+                          onTickerSelected: _setCustomTicker,
+                        );
+                      },
+                      borderRadius: BorderRadius.circular(18),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14),
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1E2824),
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(
+                            color: const Color(0xFF52B788).withValues(alpha: 0.6),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.add, size: 14, color: Color(0xFF52B788)),
+                            const SizedBox(width: 4),
+                            Text(
+                              'NEW',
+                              style: GoogleFonts.shareTechMono(
+                                color: const Color(0xFF52B788),
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                                letterSpacing: 1.2,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }
+
+                  final ch = _channels[index];
+                  final isSelected = index == _activeChannelIndex;
+                  return InkWell(
+                    onTap: () {
+                      HapticFeedback.lightImpact();
+                      setState(() => _activeChannelIndex = index);
+                      AudioService.instance.playSquelch();
+                    },
+                    borderRadius: BorderRadius.circular(18),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? const Color(0xFF52B788).withValues(alpha: 0.15)
+                            : const Color(0xFF16191F),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(
+                          color: isSelected
+                              ? const Color(0xFF52B788)
+                              : const Color(0xFF262C38),
+                        ),
+                      ),
+                      child: Text(
+                        ch,
+                        style: GoogleFonts.shareTechMono(
+                          color: isSelected ? const Color(0xFF74C69D) : Colors.white54,
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                          fontSize: 12,
+                          letterSpacing: 1.2,
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+
+            const Spacer(),
+
+            // Centered Giant PTT Button with 15s Countdown Ring & Channel Lock
+            PttButton(
+              isTransmitting: _isTransmitting,
+              isChannelBusy: _isChannelBusy,
+              onTransmitStart: _startTransmitting,
+              onTransmitEnd: _stopTransmitting,
+              onBusyBlocked: _notifyChannelBusy,
+            ),
+
+            const Spacer(),
+
+            // Discreet bottom control: Simulate Incoming Transmission
+            Padding(
+              padding: const EdgeInsets.only(bottom: 24),
+              child: TextButton.icon(
+                onPressed: _simulateIncomingCallout,
+                icon: Icon(
+                  _isChannelBusy ? Icons.lock : Icons.wifi_calling_3_rounded,
+                  size: 16,
+                  color: _isChannelBusy ? const Color(0xFFFFB703) : Colors.white38,
+                ),
+                label: Text(
+                  _isChannelBusy ? 'RECEIVING ON [$_activeTicker]...' : 'SIMULATE INCOMING CALLOUT',
+                  style: GoogleFonts.shareTechMono(
+                    fontSize: 11,
+                    letterSpacing: 1.5,
+                    color: _isChannelBusy ? const Color(0xFFFFB703) : Colors.white38,
+                  ),
+                ),
+              ),
             ),
           ],
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
       ),
     );
   }

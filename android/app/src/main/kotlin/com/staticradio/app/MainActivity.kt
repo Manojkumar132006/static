@@ -1,4 +1,4 @@
-package com.static.static_radio
+package com.staticradio.app
 
 import io.flutter.embedding.android.FlutterActivity
 
