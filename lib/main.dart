@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'services/audio_service.dart';
+import 'services/lockscreen_service.dart';
 import 'widgets/radio_display.dart';
 import 'widgets/ptt_button.dart';
 import 'widgets/ticker_sheet.dart';
@@ -48,12 +49,53 @@ class _RadioConsoleScreenState extends State<RadioConsoleScreen> {
 
   String get _activeTicker => _channels[_activeChannelIndex];
 
+  String _computeFrequency(String ticker) {
+    int hash = 0;
+    for (int i = 0; i < ticker.length; i++) {
+      hash += ticker.codeUnitAt(i) * (i + 1);
+    }
+    final mhz = 140 + (hash % 10);
+    final khz = 100 + (hash * 37) % 899;
+    return '$mhz.${khz.toString().padLeft(3, '0')} MHz';
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    LockscreenService.instance.init(
+      onPrev: _prevChannel,
+      onNext: _nextChannel,
+      onTalk: _toggleLockscreenTalk,
+    );
+    _syncLockscreen(isFirstStart: true);
+  }
+
+  void _syncLockscreen({bool isFirstStart = false}) {
+    final freq = _computeFrequency(_activeTicker);
+    if (isFirstStart) {
+      LockscreenService.instance.start(
+        ticker: _activeTicker,
+        frequency: freq,
+        isTransmitting: _isTransmitting,
+        isBusy: _isChannelBusy,
+      );
+    } else {
+      LockscreenService.instance.update(
+        ticker: _activeTicker,
+        frequency: freq,
+        isTransmitting: _isTransmitting,
+        isBusy: _isChannelBusy,
+      );
+    }
+  }
+
   void _nextChannel() {
     HapticFeedback.lightImpact();
     setState(() {
       _activeChannelIndex = (_activeChannelIndex + 1) % _channels.length;
     });
     AudioService.instance.playSquelch();
+    _syncLockscreen();
   }
 
   void _prevChannel() {
@@ -62,6 +104,7 @@ class _RadioConsoleScreenState extends State<RadioConsoleScreen> {
       _activeChannelIndex = (_activeChannelIndex - 1 + _channels.length) % _channels.length;
     });
     AudioService.instance.playSquelch();
+    _syncLockscreen();
   }
 
   void _setCustomTicker(String ticker) {
@@ -75,6 +118,15 @@ class _RadioConsoleScreenState extends State<RadioConsoleScreen> {
       }
     });
     AudioService.instance.playSquelch();
+    _syncLockscreen();
+  }
+
+  void _toggleLockscreenTalk() {
+    if (_isTransmitting) {
+      _stopTransmitting();
+    } else {
+      _startTransmitting();
+    }
   }
 
   Future<void> _startTransmitting() async {
@@ -84,9 +136,11 @@ class _RadioConsoleScreenState extends State<RadioConsoleScreen> {
     }
 
     setState(() => _isTransmitting = true);
+    _syncLockscreen();
     final started = await AudioService.instance.startTransmission();
     if (!started && mounted) {
       setState(() => _isTransmitting = false);
+      _syncLockscreen();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Microphone permission required for PTT'),
@@ -99,6 +153,7 @@ class _RadioConsoleScreenState extends State<RadioConsoleScreen> {
   Future<void> _stopTransmitting() async {
     if (!_isTransmitting) return;
     setState(() => _isTransmitting = false);
+    _syncLockscreen();
     // Ephemeral transmission: Audio data is immediately discarded / not stored on disk
     await AudioService.instance.stopTransmission();
   }
@@ -131,6 +186,7 @@ class _RadioConsoleScreenState extends State<RadioConsoleScreen> {
   Future<void> _simulateIncomingCallout() async {
     if (_isTransmitting || _isChannelBusy) return;
     setState(() => _isChannelBusy = true);
+    _syncLockscreen();
 
     await AudioService.instance.playKeyClick();
     // Simulate someone speaking for 3 seconds
@@ -139,6 +195,7 @@ class _RadioConsoleScreenState extends State<RadioConsoleScreen> {
 
     if (mounted) {
       setState(() => _isChannelBusy = false);
+      _syncLockscreen();
     }
   }
 
