@@ -28,6 +28,10 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Static needs microphone access to transmit your voice over the radio frequency.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
